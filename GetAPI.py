@@ -116,15 +116,17 @@ def retrieve_result():
         if result_data and "Error" not in result_data:
             # Convert the result data to the desired format
             formatted_result = [
-                {"name": "beauty_enhance", "quantity": result_data["BeautyEnhance"]},
-                {"name": "bone_enhance", "quantity": result_data["BoneEnhance"]},
-                {"name": "joint_enhance", "quantity": result_data["JointEnhance"]}
+                {"name": "beauty_enhance", "quantity": result_data["BeautyEnhance"], "status": "Needs Restock" if result_data["BeautyEnhance"] <= 1 else "Stocked"},
+                {"name": "bone_enhance", "quantity": result_data["BoneEnhance"], "status": "Needs Restock" if result_data["BoneEnhance"] <= 1 else "Stocked"},
+                {"name": "joint_enhance", "quantity": result_data["JointEnhance"], "status": "Needs Restock" if result_data["JointEnhance"] <= 1 else "Stocked"}
             ]
+
             return jsonify({"items": formatted_result})
         else:
             return jsonify({"Error": "Result file is empty"}), 500
     except Exception as e:
         return jsonify({"Error": f"Unexpected error: {str(e)}"}), 500
+
 
 if __name__ == '__main__':
     initial_counts = read_from_json(result_file)
