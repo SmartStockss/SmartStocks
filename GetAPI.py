@@ -2,52 +2,18 @@ from flask import Flask, request, jsonify
 import requests
 import json
 import os
-import sqlite3
-import datetime
 
 app = Flask(__name__)
-db_file = 'prediction_results.db'
+result_file = 'prediction_result.json'
 
-# Initialize database if not exists
-with sqlite3.connect(db_file) as conn:
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS results (
-            timestamp TEXT PRIMARY KEY,
-            beauty_enhance INTEGER,
-            joint_enhance INTEGER,
-            bone_enhance INTEGER
-        )
-    ''')
+noofribbons = 3
+noofarrows = 3
+noofstars = 3
 
-def read_from_db():
-    try:
-        with sqlite3.connect(db_file) as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT * FROM results ORDER BY timestamp DESC LIMIT 1')
-            result_data = cursor.fetchone()
+total_ribbons = 0
+total_arrows = 0
+total_stars = 0
 
-        if result_data:
-            keys = ['beauty_enhance', 'joint_enhance', 'bone_enhance']
-            result_dict = dict(zip(keys, result_data[1:]))  # Exclude the timestamp from the result_dict
-            return result_dict
-        else:
-            return {}
-    except Exception as e:
-        return {"Error": f"Unexpected error: {str(e)}"}
-
-def initialize_counts():
-    result_data = read_from_db()
-    if result_data and "Error" not in result_data:
-        return (
-            result_data.get("beauty_enhance", 3),
-            result_data.get("joint_enhance", 3),
-            result_data.get("bone_enhance", 3)
-        )
-    else:
-        return 3, 3, 3
-
-noofribbons, noofarrows, noofstars = initialize_counts()
 prediction_threshold = 0.90
 
 def make_prediction(image_file):
@@ -69,47 +35,39 @@ def make_prediction(image_file):
     else:
         return {"Error": f"{response.status_code} - {response.text}"}
 
-def write_to_db(timestamp, beauty_enhance, joint_enhance, bone_enhance):
-    with sqlite3.connect(db_file) as conn:
-        cursor = conn.cursor()
+def update_result_file(prediction_result):
+    existing_data = read_from_json(result_file)
 
-        # Check if a result for the given timestamp already exists
-        cursor.execute('SELECT * FROM results WHERE timestamp = ?', (timestamp,))
-        existing_result = cursor.fetchone()
+    # Update existing data with the new prediction results
+    for key, value in prediction_result.items():
+        existing_data[key] = value
 
-        if existing_result:
-            # Overwrite the existing record with the new result
-            cursor.execute('''
-                UPDATE results
-                SET beauty_enhance = ?, joint_enhance = ?, bone_enhance = ?
-                WHERE timestamp = ?
-            ''', (beauty_enhance, joint_enhance, bone_enhance, timestamp))
-        else:
-            # Insert a new record if the timestamp doesn't exist
-            cursor.execute('''
-                INSERT INTO results (timestamp, beauty_enhance, joint_enhance, bone_enhance)
-                VALUES (?, ?, ?, ?)
-            ''', (timestamp, beauty_enhance, joint_enhance, bone_enhance))
+    # Update counts in the existing data
+    existing_data["total_ribbons"] = total_ribbons
+    existing_data["total_arrows"] = total_arrows
+    existing_data["total_stars"] = total_stars
 
-def read_from_db():
+    # Write the updated data back to the result file
+    write_to_json(existing_data, result_file)
+
+def read_from_json(file_path):
     try:
-        with sqlite3.connect(db_file) as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT * FROM results ORDER BY timestamp DESC LIMIT 1')
-            result_data = cursor.fetchone()
-
-        if result_data:
-            keys = ['beauty_enhance', 'joint_enhance', 'bone_enhance']
-            result_dict = dict(zip(keys, result_data[1:]))  # Exclude the timestamp from the result_dict
-            return result_dict
+        if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+            with open(file_path, 'r') as json_file:
+                loaded_data = json.load(json_file)
+                return loaded_data
         else:
             return {}
     except Exception as e:
         return {"Error": f"Unexpected error: {str(e)}"}
 
+def write_to_json(data, file_path):
+    with open(file_path, 'w') as json_file:
+        json.dump(data, json_file)
+
 @app.route('/', methods=['POST', 'GET'])
 def detect_objects():
-    global noofribbons, noofarrows, noofstars
+    global total_ribbons, total_arrows, total_stars
 
     if request.method == 'POST':
         try:
@@ -121,24 +79,16 @@ def detect_objects():
             if image_file.filename == '':
                 return jsonify({"Error": "No selected file"}), 400
 
-            # Reset counts to initial values
-            noofribbons = 3
-            noofarrows = 3
-            noofstars = 3
-
             # Make predictions
             prediction_result = make_prediction(image_file)
 
-            # Get current timestamp
-            timestamp = str(datetime.datetime.now())
-
-            # Write results to the database, overwriting existing record if any
-            write_to_db(timestamp, prediction_result["BeautyEnhance"], prediction_result["JointEnhance"], prediction_result["BoneEnhance"])
+            # Update the result file with the prediction results
+            update_result_file(prediction_result)
 
             # Update global counts
-            noofribbons = prediction_result["BeautyEnhance"]
-            noofarrows = prediction_result["JointEnhance"]
-            noofstars = prediction_result["BoneEnhance"]
+            total_ribbons = prediction_result["BeautyEnhance"]
+            total_arrows = prediction_result["JointEnhance"]
+            total_stars = prediction_result["BoneEnhance"]
 
             # Return a response indicating successful image processing
             return jsonify({"Message": "Image processed successfully"})
@@ -160,25 +110,38 @@ def detect_objects():
 @app.route('/result', methods=['GET'])
 def retrieve_result():
     try:
-        # Read the latest result from the database
-        result_data = read_from_db()
+        # Read the latest result from the JSON file
+        result_data = read_from_json(result_file)
 
         if result_data and "Error" not in result_data:
-            # Create the desired JSON format
-            result_json = {
-                "items": [
-                    {"name": "beauty_enhance", "quantity": result_data.get("beauty_enhance", 0)},
-                    {"name": "bone_enhance", "quantity": result_data.get("bone_enhance", 0)},
-                    {"name": "joint_enhance", "quantity": result_data.get("joint_enhance", 0)}
-                ]
-            }
-            return jsonify(result_json)
+            # Convert the result data to the desired format
+            formatted_result = [
+                {"name": "beauty_enhance", "quantity": result_data["BeautyEnhance"]},
+                {"name": "bone_enhance", "quantity": result_data["BoneEnhance"]},
+                {"name": "joint_enhance", "quantity": result_data["JointEnhance"]}
+            ]
+            return jsonify({"items": formatted_result})
         else:
-            return jsonify({"Error": "Result not found"}), 404
+            return jsonify({"Error": "Result file is empty"}), 500
     except Exception as e:
         return jsonify({"Error": f"Unexpected error: {str(e)}"}), 500
 
 if __name__ == '__main__':
+    initial_counts = read_from_json(result_file)
+    total_ribbons = initial_counts.get("total_ribbons")
+    total_arrows = initial_counts.get("total_arrows")
+    total_stars = initial_counts.get("total_stars")
+
+    if total_ribbons is not None:
+        total_ribbons = int(total_ribbons)
+
+    if total_arrows is not None:
+        total_arrows = int(total_arrows)
+
+    if total_stars is not None:
+        total_stars = int(total_stars)
+
     app.run(debug=True)
+
 
 
